@@ -3,8 +3,8 @@ import logging
 import psycopg2
 from google.cloud import speech
 from google.oauth2 import service_account
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext, filters
 import re
 
 # Configurar el registro de errores
@@ -15,8 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Datos de la base de datos PostgreSQL
-DB_HOST = '104.197.213.99'
-DB_NAME = 'obesidaddb'
+DB_HOST = '35.226.185.173' #104.197.213.99
+DB_NAME = 'postgres'
 DB_USER = 'postgres'
 DB_PASS = 'postgres'
 
@@ -44,9 +44,54 @@ def connect_db():
         logger.error(f"Error al conectar a la base de datos: {e}")
         return None
 
+# Function to connect to the database and retrieve data
+def get_medic_data():
+    conn = psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASS,
+        host=DB_HOST,
+        port="5432"
+    )
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nombre FROM medicos")  # Adjust the query according to your table schema
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_schedules_for_medic(medic_id):
+    conn = connect_db()
+    if not conn:
+        return []
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, fecha, hora, estado FROM horario WHERE id_medico = %s", (medic_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+
+def update_schedule_status(schedule_id):
+    conn = connect_db()
+    if not conn:
+        return False
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE horario SET estado = %s WHERE id = %s", (False, schedule_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error al actualizar el estado del horario en la base de datos: {e}")
+        return False
+
 # Variables para controlar el flujo de diálogo
 pending_audio = {}
 user_data = {}
+medic_data = get_medic_data()
 
 async def start(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
@@ -80,7 +125,7 @@ async def handle_text(update: Update, context: CallbackContext) -> None:
         try:
             cursor = connection.cursor()
             cursor.execute(
-                "INSERT INTO usuario (cedula, nombres, apellidos, telefono, correo, edad) VALUES (%s, %s, %s, %s, %s, %s)",
+                "INSERT INTO usuarios (cedula, nombres, apellidos, telefono, correo, edad) VALUES (%s, %s, %s, %s, %s, %s)",
                 (cedula, nombres, apellidos, telefono, correo, edad)
             )
             connection.commit()
@@ -172,17 +217,17 @@ async def handle_audio(update: Update, context: CallbackContext) -> None:
             if entre_comidas not in ['nunca', 'a veces', 'frecuentemente', 'siempre']:
                 entre_comidas = None
 
-    if 'historial familiar' in transcription:
-        if 'sí' in transcription:
-            historial_familiar = True
-        elif 'no' in transcription:
-            historial_familiar = False
+    if 'historial familiar es sí' in transcription:                   
+        historial_familiar = True
 
-    if 'comidas calóricas' in transcription:
-        if 'sí' in transcription:
-            comidas_caloricas = True
-        elif 'no' in transcription:
-            comidas_caloricas = False
+    if 'historial familiar es no' in transcription:                   
+        historial_familiar = False
+
+    if 'comidas calóricas es sí' in transcription:
+        comidas_caloricas = True
+
+    if 'comidas calóricas es no' in transcription:
+        comidas_caloricas = False
 
     if any(param is None for param in [peso, altura, entre_comidas, historial_familiar, comidas_caloricas]):
         await update.message.reply_text(
@@ -196,7 +241,7 @@ async def handle_audio(update: Update, context: CallbackContext) -> None:
         try:
             cursor = connection.cursor()
             cursor.execute(
-                "UPDATE usuario SET peso = %s, altura = %s, entrecomidas = %s, historialfamiliar = %s, comidascaloricas = %s WHERE cedula = %s",
+                "UPDATE usuarios SET peso = %s, altura = %s, entrecomidas = %s, historialfamiliar = %s, comidascaloricas = %s WHERE cedula = %s",
                 (peso, altura, entre_comidas, historial_familiar, comidas_caloricas, user_data[user_id]['cedula'])
             )
             connection.commit()
@@ -204,6 +249,8 @@ async def handle_audio(update: Update, context: CallbackContext) -> None:
             connection.close()
 
             await update.message.reply_text('Datos actualizados correctamente en la base de datos.')
+
+            await start_doctor_selection(update, context)
         except Exception as e:
             logger.error(f"Error al actualizar datos en la base de datos: {e}")
             await update.message.reply_text('Hubo un error al actualizar los datos en la base de datos, por favor intenta nuevamente.')
@@ -212,6 +259,46 @@ async def handle_audio(update: Update, context: CallbackContext) -> None:
 
     pending_audio[user_id] = False
 
+# Function to start the bot and provide options for doctors
+async def start_doctor_selection(update: Update, context: CallbackContext) -> None:
+    keyboard = [[InlineKeyboardButton(m[1], callback_data=f"medic_{m[0]}")] for m in medic_data]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('Selecciona una opción:', reply_markup=reply_markup)
+
+async def handle_doctor_selection(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    medic_id = query.data.split('_')[1]
+    await query.answer()
+    await query.edit_message_text(text=f"Seleccionaste el médico con ID: {medic_id}")
+    
+    schedules = get_schedules_for_medic(medic_id)
+    if not schedules:
+        await query.edit_message_text('No se encontraron horarios disponibles para el médico seleccionado.')
+        return
+
+    keyboard = [[InlineKeyboardButton(f"{schedule[1]} - {schedule[2]}", callback_data=f"schedule_{schedule[0]}")] for schedule in schedules]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text('Selecciona un horario:', reply_markup=reply_markup)
+
+async def handle_schedule_selection(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    schedule_id = query.data.split('_')[1]
+    
+    # Actualizar el estado del horario en la base de datos
+    if update_schedule_status(schedule_id):
+        await query.answer()
+        await query.edit_message_text(text=f"Seleccionaste el horario con ID: {schedule_id}. El horario se te ha asignado.")
+        await update.effective_message.reply_text('¡Gracias por usar nuestro bot!, presentate con el médico en el horario seleccionado para recibir tu diagnóstico.')
+
+    else:
+        await query.answer()
+        await query.edit_message_text('Hubo un error al actualizar el estado del horario. Inténtalo de nuevo.')
+
+# Function to handle button selection
+#async def button(update: Update, context: CallbackContext) -> None:
+#    query = update.callback_query
+#    await query.answer()
+#    await query.edit_message_text(text=f"Seleccionaste la opción con ID: {query.data}")
 
 async def error_handler(update: object, context: CallbackContext) -> None:
     """Log the error and send a message to the user."""
@@ -221,11 +308,16 @@ async def error_handler(update: object, context: CallbackContext) -> None:
 
 def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
+    
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('select_doctor', start_doctor_selection))
+    #application.add_handler(CallbackQueryHandler(button))
+    #application.add_handler(CallbackQueryHandler(handle_doctor_selection))
+    #application.add_handler(CallbackQueryHandler(handle_schedule_selection))
+    application.add_handler(CallbackQueryHandler(handle_doctor_selection, pattern=r'^medic_\d+$'))
+    application.add_handler(CallbackQueryHandler(handle_schedule_selection, pattern=r'^schedule_\d+$'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.VOICE, handle_audio))
-    application.add_handler(MessageHandler(filters.TEXT))
     application.add_error_handler(error_handler)
 
     # Confirmar la conexión a la base de datos al iniciar el bot

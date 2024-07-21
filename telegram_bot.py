@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Ruta al archivo de credenciales JSON
-CREDENTIALS_FILE = 'credenciales.json'
+CREDENTIALS_FILE = 'credencialesfinal.json'
 
 # Configurar el cliente de Google Speech-to-Text con las credenciales
 credentials = service_account.Credentials.from_service_account_file(CREDENTIALS_FILE)
