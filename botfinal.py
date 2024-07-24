@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Datos de la base de datos PostgreSQL
-DB_HOST = '34.66.57.179' #104.197.213.99
+DB_HOST = '35.209.157.211' #104.197.213.99
 DB_NAME = 'postgres'
 DB_USER = 'postgres'
 DB_PASS = 'postgres'
@@ -301,7 +301,7 @@ async def handle_audio(update: Update, context: CallbackContext) -> None:
         try:
             cursor = connection.cursor() 
             cursor.execute(
-                "UPDATE usuarios SET peso = %s, altura = %s, entrecomidas = %s, historialfamiliar = %s, comidascaloricas = %s, prediacnostico = %s  WHERE cedula = %s",
+                "UPDATE usuarios SET peso = %s, altura = %s, entrecomidas = %s, historialfamiliar = %s, comidascaloricas = %s, prediagnostico = %s  WHERE cedula = %s",
                 (peso, altura, entre_comidas, historial_familiar, comidas_caloricas, resultado, user_data[user_id]['cedula'])
             )
             connection.commit()
